@@ -25,7 +25,7 @@ def np_repeat(inputs, repeats, axis=0):
     return a
 
 
-def ps_roi(features, boxes, pool = True, offsets = None, k = 3, feat_stride = 8):
+def ps_roi(features, boxes, pool = True, offsets = [], k = 3, feat_stride = 8):
     pooled_response = tf.py_func(_ps_roi,[features, boxes, pool, offsets, k, feat_stride],tf.float32)
     pooled_fea = tf.convert_to_tensor(pooled_response)
     return pooled_fea
@@ -34,7 +34,7 @@ def _ps_roi(features, boxes, pool, offsets, k, feat_stride):
     '''
     Implement the PSROI pooling
     :param features: (1,h,w,2*k^2*(c+1) or (1,h,w,2*K^2*4)
-    :param boxes: (n,5)->(0,x1,y1,x2,y2)
+    :param boxes: (5)->(0,x1,y1,x2,y2)
     :param pool: control whether ave_pool the features
     :param offsets: (n*k*k*(c+1),2)
     :param k: output size,(x,y)
@@ -66,10 +66,10 @@ def _ps_roi(features, boxes, pool, offsets, k, feat_stride):
     boxes_part = np.reshape(np.floor(boxes_part),(boxes_num,k*k,-1,4))  #(n,k*k,1,4)
 
     # add offsets to splitted boxes
-    if offsets is not None:
-        offsets0 = offsets  #(n*k*k*c,2)
+    if offsets:
+        offsets0 = np.zeros((boxes_num * k * k * depth, 2))  # (n*k*k*c,2)
     else:
-        offsets0 = np.zeros((boxes_num * k * k * depth, 2))  #(n*k*k*c,2)
+        offsets0 = offsets  # (n*k*k*c,2)
     offsets0 = np.reshape(offsets0, (int(boxes_num), int(k * k), int(depth),2))  #(n,k*k,c,2)(x,y,x,y,x,y)
     # offsets1 = tf.stack((offsets0, offsets0),axis=3)
     # offsets1 = tf.reshape(offsets1,(boxes_num, k * k, depth, 4))
@@ -79,22 +79,12 @@ def _ps_roi(features, boxes, pool, offsets, k, feat_stride):
     boxes_part = np.reshape(boxes_part,(int(boxes_num*k*k*depth),4)) #(n*k*k*depth,4)
 
     # clip split boxes by feature' size
-    # temp00 = tf.clip_by_value(boxes_part[..., 0], 0, tf.cast(fea_shape[2],'float32') - 1)
-    # temp11 = tf.clip_by_value(boxes_part[..., 1], 0, tf.cast(fea_shape[1],'float32') - 1)
-    # temp22 = tf.clip_by_value(boxes_part[..., 2], 0, tf.cast(fea_shape[2],'float32') - 1)
-    # temp33 = tf.clip_by_value(boxes_part[..., 3], 0, tf.cast(fea_shape[1],'float32') - 1)
-    # boxes_k_offset = tf.stack([temp00, temp11, temp22, temp33], axis=-1)  #(n*k*k*depth,4)
-    # boxes_k_offset = tf.reshape(boxes_k_offset,(boxes_num*k*k,depth,4))  #(n*k*k*depth,4)
-
-
-    # clip split boxes by feature' size
     temp00 = np.clip(boxes_part[..., 0], 0, fea_shape[2] - 1)
     temp11 = np.clip(boxes_part[..., 1], 0, fea_shape[1] - 1)
     temp22 = np.clip(boxes_part[..., 2], 0, fea_shape[2] - 1)
     temp33 = np.clip(boxes_part[..., 3], 0, fea_shape[1] - 1)
     boxes_k_offset = np.stack([temp00,temp11,temp22,temp33],axis=-1)    #(n*k*k*depth,4)
     boxes_k_offset = np.reshape(boxes_k_offset,(int(boxes_num*k*k),int(depth),4))   #(n*k*k,depth,4)
-
 
     # num of classes
     all_boxes_num = boxes_num * k * k

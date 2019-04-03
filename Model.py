@@ -175,6 +175,7 @@ def model_part2(imdims,roi,ps_score_map,bbox_shift):
         return tf.cast((i < roi_num), tf.bool)
 
     def body1(i, rois):
+        roi = rois[i]
         offsets = model_part2_2(rois[i], bbox_shift)  # (4)
         offsets = tf.reshape(offsets, (-1, 4))
 

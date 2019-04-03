@@ -2,13 +2,14 @@ from __future__ import absolute_import, division
 
 
 import tensorflow as tf
+from config import config as cfg
 from lib.deform_psroi_pooling.ps_roi import ps_roi,tf_repeat,tf_flatten
 
 class PS_roi_offset():
 
     def __init__(self,features,rois,pool_size,pool,feat_stride,init_normal_stddev = 0.01,**kwargs):
         self.features = features
-        self.filters = tf.cast(features.get_shape()[-1],'int32')
+        self.filters = 4*cfg.network.PSROI_BINS*cfg.network.PSROI_BINS
         self.rois = rois
         self.pool_size = pool_size   #control nums of relative positions
         self.pool = pool  #control whether ave_pool the ps_score_map
@@ -23,9 +24,14 @@ class PS_roi_offset():
         roi_width = self.rois[3] - self.rois[1]    #(1)
         roi_height = self.rois[4] - self.rois[2]    #(1)
         offset_map = tf.keras.layers.Conv2D(self.filters*2,(3,3),padding='same',
-                                            use_bias=False,kernel_initializer='zeros')(inputs)
+                                            use_bias=False)(inputs)
+        # offset_map = slim.conv2d(inputs,8,(3,3))
+        roi = tf.reshape(self.rois, (1,5))
         offset = ps_roi(offset_map,self.rois)  # normalized offset (n*k*k,(c+1)*2)
         offset = tf.reshape(offset,(-1,2)) # normalized offset (n*k*k*(c+1),2)
+        sa = offset.get_shape()[0]
+        sa0 = tf.cast(sa,'int32')
+        sa1 = tf.cast(roi_shape[0],'int32')
         repeats = tf.cast(offset.get_shape()[0],'int32')/tf.cast(roi_shape[0],'int32')
 
         # compute the roi's width and height

@@ -22,9 +22,9 @@ def main():
     with tf.variable_scope('model'):
         x1 = tf.zeros((1,224,225,3))
         x2 = [[100,100,160,160]]
-        roi,ps_score,bbox_shift,cls_loss_rpn,bbox_loss_rpn = model_part1(images=x1,
+        roi,ps_score,bbox_shift,cls_loss_rpn,bbox_loss_rpn = model_part1(images=input_images,
                                                                          is_training=True,
-                                                                         gt_boxes=x2)
+                                                                         gt_boxes=gt_boxes)
         result = model_part2(imdims=(224,225), roi=roi, ps_score_map=ps_score, bbox_shift=bbox_shift)
         result_keep = model_part3(results=result)
 
