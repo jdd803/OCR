@@ -9,7 +9,7 @@ from lib.ROI_proposal.proposal_target_layer import proposal_target_layer
 from load_data import next_batch
 
 def main():
-    input_images = tf.placeholder(tf.float32, shape=[1,None,None,3], name='input_image')
+    input_images = tf.placeholder(tf.float32, shape=[1,224,224,3], name='input_image')
     img_mask = tf.placeholder(tf.int32, shape=[None,8], name='mask')
     gt_boxes = tf.placeholder(tf.int32, shape=[None,5], name='groundtruth_boxes')
 
@@ -19,14 +19,23 @@ def main():
     tf.summary.scalar('learning_rate',learning_rate)
     opt = tf.train.AdamOptimizer(learning_rate)
 
+    init_op = tf.global_variables_initializer()
+
+
     with tf.variable_scope('model'):
-        x1 = tf.zeros((1,224,225,3))
-        x2 = [[100,100,160,160]]
-        roi,ps_score,bbox_shift,cls_loss_rpn,bbox_loss_rpn = model_part1(images=input_images,
-                                                                         is_training=True,
-                                                                         gt_boxes=gt_boxes)
-        result = model_part2(imdims=(224,225), roi=roi, ps_score_map=ps_score, bbox_shift=bbox_shift)
-        result_keep = model_part3(results=result)
+        x1 = np.zeros((1,224,224,3))
+        x2 = [[100,100,160,160,1]]
+        roi, ps_score, bbox_shift, cls_loss_rpn, bbox_loss_rpn = model_part1(images=input_images,is_training=True,gt_boxes=gt_boxes)
+        result = model_part2(imdims=(224,225), rois=roi, ps_score_map=ps_score, bbox_shift=bbox_shift)
+
+    with tf.Session() as sess:
+        sess.run(init_op)
+        roi, ps_score, bbox_shift, cls_loss_rpn, \
+        bbox_loss_rpn = sess.run((roi,ps_score,bbox_shift,cls_loss_rpn,bbox_loss_rpn),
+                                 feed_dict={input_images:x1,gt_boxes:x2})
+        result = sess.run(result)
+
+    result_keep = model_part3(results=result)
 
     # compute the postive boxes and positive boxes
     # compute the boxes' inside_weights and out_side weights
@@ -87,7 +96,7 @@ def main():
     training_step = opt.minimize(total_loss,global_step=global_step)
 
 
-    with tf.Session() as sess:
+    with sess.as_default():
         start = time.time()
         for step in range(1000):
             x,y_gtbox,y_mask = next_batch(batch_size=1,pos=step)

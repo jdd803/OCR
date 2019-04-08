@@ -36,68 +36,79 @@ def _ps_roi(features, boxes, pool, offsets, k, feat_stride):
     :param features: (1,h,w,2*k^2*(c+1) or (1,h,w,2*K^2*4)
     :param boxes: (5)->(0,x1,y1,x2,y2)
     :param pool: control whether ave_pool the features
-    :param offsets: (n*k*k*(c+1),2)
+    :param offsets: (k*k*(c+1),2)
     :param k: output size,(x,y)
     :return:(b,k,k,c+1)
     '''
     fea_shape = np.shape(features)
-    #num_classes = tf.cast(fea_shape[-1], 'int32') / (k * k)  #channels
     num_classes = fea_shape[-1] / (k * k)  #channels
-    depth = num_classes
-    boxes_num = np.shape(boxes)[0]
+    depth = num_classes    #(c+1)
     feature_boxes = np.round(boxes / feat_stride)
-    feature_boxes[:,-2:] -= 1  #not include right and bottom edge
-    top_left_point = np.hstack((feature_boxes[:,1:3],feature_boxes[:,1:3])).reshape((boxes_num,1,4))
-    boxes_part = np.zeros((boxes_num, k * k, 4))  #(n,k^2,4)
-    boxes_part[:,] += top_left_point[:,]
-    width = (feature_boxes[:,3] - feature_boxes[:,1] + 1) / k   # (n,1)
-    height = (feature_boxes[:,4] - feature_boxes[:,2] + 1) / k   # (n,1)
+    feature_boxes[-2:] -= 1  #not include right and bottom edge
+    top_left_point = np.hstack((feature_boxes[1:3],feature_boxes[1:3])).reshape((1,4))
+    boxes_part = np.zeros(( k * k, 4))  #(k^2,4)
+    boxes_part += top_left_point   #(k*k,4)
+    width = (feature_boxes[3] - feature_boxes[1]) / k   # (n,1)
+    height = (feature_boxes[4] - feature_boxes[2]) / k   # (n,1)
 
     # split boxes
-    for i in range(boxes_num):
-        shift_x = np.arange(0, k) * width[i]
-        shift_y = np.arange(0, k) * height[i]
-        shift_x, shift_y = np.meshgrid(shift_x, shift_y)
-        shifts = np.vstack((shift_x.ravel(), shift_y.ravel(),
-                            shift_x.ravel(), shift_y.ravel())).transpose()
-        boxes_part[i] += shifts
-        boxes_part[i, :, 2] = boxes_part[i, :, 0] + width[i]
-        boxes_part[i, :, 3] = boxes_part[i, :, 1] + height[i]
-    boxes_part = np.reshape(np.floor(boxes_part),(boxes_num,k*k,-1,4))  #(n,k*k,1,4)
+    shift_x = np.arange(0, k) * width
+    shift_y = np.arange(0, k) * height
+    shift_x, shift_y = np.meshgrid(shift_x, shift_y)
+    shifts = np.vstack((shift_x.ravel(), shift_y.ravel(),
+                        shift_x.ravel(), shift_y.ravel())).transpose()
+    boxes_part += shifts
+    boxes_part[:, 2] = boxes_part[:, 0] + width - 1
+    boxes_part[:, 3] = boxes_part[:, 1] + height - 1
+    boxes_part = np.reshape(np.floor(boxes_part),(k,k,-1,4))  #(k,k,1,4)
+    boxes_part[:, -1, 0, 2] = feature_boxes[-2]
+    boxes_part[-1, :, 0, 3] = feature_boxes[-1]
+    boxes_part = np.reshape(boxes_part, (1, int(k*k), 4))   #(1,k*k,4)
 
     # add offsets to splitted boxes
-    if offsets:
-        offsets0 = np.zeros((boxes_num * k * k * depth, 2))  # (n*k*k*c,2)
+    if len(offsets) == 0:
+        offsets0 = np.zeros((depth * k * k, 2))  # (k*k*2*(c+1),2)
     else:
-        offsets0 = offsets  # (n*k*k*c,2)
-    offsets0 = np.reshape(offsets0, (int(boxes_num), int(k * k), int(depth),2))  #(n,k*k,c,2)(x,y,x,y,x,y)
+        offsets0 = offsets  # (k*k*c,2)
+    offsets0 = np.reshape(offsets0, (int(k * k), int(depth), 2))  #(x,y,x,y,x,y)(k*k,c,2)
     # offsets1 = tf.stack((offsets0, offsets0),axis=3)
     # offsets1 = tf.reshape(offsets1,(boxes_num, k * k, depth, 4))
-    offsets1 = np.tile(offsets0, (1, 1, 1, 2))  #(n,k*k,c,4)
-    boxes_part = np.repeat(boxes_part,depth,axis=2)
-    boxes_part += offsets1  #(n,k*k,depth,4)
-    boxes_part = np.reshape(boxes_part,(int(boxes_num*k*k*depth),4)) #(n*k*k*depth,4)
+    offsets1 = np.tile(offsets0, (1, 1, 2))  #(k*k,c,4)
+    offsets1 = np.transpose(offsets1,(1,0,2))   #(c,k*k,4)
+    boxes_part = np.repeat(boxes_part,depth,axis=0)
+    boxes_part += offsets1  #(c,k*k,4)
+    boxes_part = np.reshape(boxes_part,(int(k*k*depth),4)) #(c*k*k,4)
 
     # clip split boxes by feature' size
     temp00 = np.clip(boxes_part[..., 0], 0, fea_shape[2] - 1)
     temp11 = np.clip(boxes_part[..., 1], 0, fea_shape[1] - 1)
     temp22 = np.clip(boxes_part[..., 2], 0, fea_shape[2] - 1)
     temp33 = np.clip(boxes_part[..., 3], 0, fea_shape[1] - 1)
-    boxes_k_offset = np.stack([temp00,temp11,temp22,temp33],axis=-1)    #(n*k*k*depth,4)
-    boxes_k_offset = np.reshape(boxes_k_offset,(int(boxes_num*k*k),int(depth),4))   #(n*k*k,depth,4)
+    boxes_k_offset = np.stack([temp00,temp11,temp22,temp33],axis=-1)    #(c*k*k,4)
+    boxes_k_offset = np.reshape(boxes_k_offset,(int(depth), int(k*k), 4))   #(c,k*k,4)
+    boxes_k_offset = np.transpose(boxes_k_offset,(1,0,2))   #(k*k,c,4)
 
     # num of classes
-    all_boxes_num = boxes_num * k * k
+    all_boxes_num = k * k
     for i in range(all_boxes_num):
         part_k = i % (k * k)
-        pooled_fea = map_coordinates(features[0],boxes_k_offset[i],part_k,num_classes,pool)  #(1,depth,1)/(1,depth,n_points)
-        try:
-            pooled_response = np.concatenate((pooled_response, pooled_fea), 0)
-        except UnboundLocalError:
-            pooled_response = pooled_fea
+        pooled_fea = map_coordinates(features[0],boxes_k_offset[i],part_k,num_classes,pool)  #(depth,1)/(depth,h,w)
+        if (part_k % k) == 0:
+            pooled_row = pooled_fea
+        elif (part_k % k) == (k - 1) and part_k != (k - 1):
+            pooled_row = np.concatenate((pooled_row, pooled_fea), axis=2)
+            pooled_response = np.concatenate((pooled_response, pooled_row), axis=1)
+        elif (part_k % k) == (k - 1) and part_k == (k - 1):
+            pooled_row = np.concatenate((pooled_row,pooled_fea), axis=2)
+            pooled_response = pooled_row
+        else:
+            pooled_row = np.concatenate((pooled_row,pooled_fea), axis=2)
+        # try:
+        #     pooled_response = np.concatenate((pooled_response, pooled_fea), 0)
+        # except UnboundLocalError:
+        #     pooled_response = pooled_fea
 
-    return pooled_response  #(n*k*k,depth,1)/(n*k*k,depth,n_points)
-
+    return pooled_response  #(depth,k,k)/(depth,height,width)
 
 def map_coordinates(inputs,boxes,k,num_classes,pool):
     '''
@@ -116,9 +127,10 @@ def map_coordinates(inputs,boxes,k,num_classes,pool):
     depth = np.shape(boxes)[0]
     tp_lf = np.reshape(boxes[:,0:2],(-1,1,2))   #(depth,1,2)
     grid = np.meshgrid(np.array(range(int(height))), np.array(range(int(width))))
-    grid = np.stack(grid, axis=-1)
+    grid = np.stack(grid, axis=-1)  #(h,w,2)
+    #grid = np.expand_dims(grid,axis=0)  #(1,h,w,2)
     grid = np.reshape(grid, (1,-1, 2))  #(1,n_points,2)
-    coords = grid + tp_lf   #(depth,n_points,2)
+    coords = grid + tp_lf   #(depth,n,2)
     n_coords = np.shape(coords)[1]
 
     # coords_lt = tf.cast(tf.floor(coords), 'int32')  #(depth,n_points,2)
@@ -126,8 +138,11 @@ def map_coordinates(inputs,boxes,k,num_classes,pool):
     # coords_lb = tf.stack([coords_lt[..., 0], coords_rb[..., 1]], axis=-1)
     # coords_rt = tf.stack([coords_rb[..., 0], coords_lt[..., 1]], axis=-1)
 
+
     coords_lt = np.floor(coords)
     coords_rb = np.ceil(coords)
+    coords_lt = coords_lt.astype(np.int32)
+    coords_rb = coords_rb.astype(np.int32)
     coords_lb = np.stack([coords_lt[..., 0], coords_rb[..., 1]], axis=-1)
     coords_rt = np.stack([coords_rb[..., 0], coords_lt[..., 1]], axis=-1)   #(depth,n_points,2)
 
@@ -135,13 +150,16 @@ def map_coordinates(inputs,boxes,k,num_classes,pool):
 
     def _get_vals_by_coords(input, coords):
         inputs1 = input[:,:,int(k*num_classes):int((k+1)*num_classes)]  #(h,w,depth)
-        inputs2 = tf.transpose(inputs1,(2,0,1))  #(depth,h,w)
+        inputs2 = np.transpose(inputs1,(2,0,1))  #(depth,h,w)
         indices = np.stack([
             idx,np_flatten(coords[..., 0]), np_flatten(coords[..., 1])
         ], axis=-1)
-        # vals1 = tf.gather_nd(inputs2, indices)  #(depth*n_points)
-        # vals = tf.reshape(vals1,(depth,n_coords))
-        vals = np.take(inputs2,indices)
+        inputs_shape = np.shape(inputs2)
+        temp1 = inputs_shape[1]*inputs_shape[2]
+        temp2 = inputs_shape[2]
+        indices1 = [i[0]*temp1+i[1]*temp2+i[2] for i in indices]
+
+        vals = np.take(inputs2,indices1)
         vals = np.reshape(vals, (int(depth),int(n_coords)))
         return vals  #(depth,n_points)
 
@@ -155,20 +173,12 @@ def map_coordinates(inputs,boxes,k,num_classes,pool):
     vals_t = vals_lt + (vals_rt - vals_lt) * coords_offset_lt[..., 0]
     vals_b = vals_lb + (vals_rb - vals_lb) * coords_offset_lt[..., 0]
     mapped_vals = vals_t + (vals_b - vals_t) * coords_offset_lt[..., 1]  # (depth,n_points)
-    # def true_fn():
-    #     pooled_box = tf.reduce_mean(mapped_vals,axis=1) #(depth,1)
-    #     return tf.reshape(pooled_box,(1,depth,-1))
-    # def false_fn():
-    #     return tf.reshape(mapped_vals, (1, depth, -1))
-    #
-    #
-    # pooled_box = tf.cond(pool, true_fn,false_fn)
 
     if pool:
         pooled_box = np.mean(mapped_vals, axis=1)   #(depth,1)
-        pooled_box = np.reshape(pooled_box, (1, depth, -1))    #(1,depth,1)
+        pooled_box = np.reshape(pooled_box, (depth, 1, 1))    #(depth,1,1)
     else:
-        pooled_box = np.reshape(mapped_vals, (1, depth, -1))    #(1,depth,n)
+        pooled_box = np.reshape(mapped_vals, (depth, int(height), int(width)))    #(depth,h,w)
 
 
-    return pooled_box  #(1,depth,1)/(1,depth,n_points)
+    return pooled_box  #(depth,1)/(depth,h,w)

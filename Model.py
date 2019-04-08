@@ -93,14 +93,14 @@ def model_part1(images,weight_decay=1e-5,is_training=True,gt_boxes = None):
             rpn_cls_loss = rpn_net.get_rpn_cls_loss()
             rpn_bbox_loss = rpn_net.get_rpn_bbox_loss()
             roi = roi_proposal(rpn_net,gt_boxes,im_info,eval_mode)  #(n,5)
+            rois = roi.get_rois()  #(n,5)
 
             # compute the score_map for cls_seg and bbox_regression
             ps_score_map = slim.conv2d(inception_out2,4*cfg.network.PSROI_BINS*cfg.network.PSROI_BINS,(1,1),activation_fn=None)  #inside_outside ps_score map
             bbox_shift = slim.conv2d(inception_out2,4*cfg.network.PSROI_BINS*cfg.network.PSROI_BINS,(1,1),activation_fn=None)   #rfcn_bbox_pred
 
             #upsample the score_maps to image's size
-            pass
-            return roi,ps_score_map,bbox_shift,rpn_cls_loss,rpn_bbox_loss
+            return rois,ps_score_map,bbox_shift,rpn_cls_loss,rpn_bbox_loss
 
 def model_part2_1(roi,ps_score_map):
     '''
@@ -112,30 +112,31 @@ def model_part2_1(roi,ps_score_map):
     # rois = roi.get_rois()
     ps_roi_layer1 = PS_roi_offset(ps_score_map, roi,
                                   pool_size=cfg.network.PSROI_BINS,pool=False,
-                                  feat_stride=8).call(ps_score_map)  #(49,2*2,n_points),(n*k*k,depth,1)/(n*k*k,depth,n_points)
+                                  feat_stride=8).call(ps_score_map)  #(2*2,h,w)
     # roi_num = tf.shape(rois)[0]
+    ps_roi_layer1_shape = tf.shape(ps_roi_layer1)
+    mask_cls = tf.reshape(ps_roi_layer1,(cfg.dataset.NUM_CLASSES+1,2,ps_roi_layer1_shape[-2],ps_roi_layer1_shape[-1]))
+    #(2,2,h,w)(inside/outside,class,h,w)
 
-    mask_cls = tf.reshape(ps_roi_layer1,(cfg.network.PSROI_BINS*cfg.network.PSROI_BINS,2,2,-1))  #(49,2,2,n_points)
+    #mask_cls = tf.reshape(ps_roi_layer1,(cfg.network.PSROI_BINS*cfg.network.PSROI_BINS,2,2,-1))  #(49,2,2,n_points)
 
 
-    mask_cls = tf.transpose(mask_cls,(0,1,3,2))   #(49,2,n_points,2)--(bins,classes,pixel,in/outside score)
-    mask = tf.nn.softmax(mask_cls,axis=-1)   #inside/outside softmax
+    mask_cls = tf.transpose(mask_cls,(1,2,3,0))   #(class,h,w,inside/outside)(2,h,w,2)
+    mask = tf.nn.softmax(mask_cls,axis=-1)   #(class,h,w,inside/outside)(2,h,w,2)
 
-    cls_max = tf.reduce_max(mask_cls,axis=-1)   #(49,2,n_points)--(bins,classes,pixel_max)
-    cls_max_t = tf.transpose(cls_max,(0,2,1,3))   #(2,49,n_points)--(classes,bins,pixel_max)
-    cls_max_r = tf.reshape(cls_max_t,(2,-1))   #(2,49*n_points)--(classes,bins*pixel_max)
-    cls_ave = tf.reshape(tf.reduce_mean(cls_max_r,axis=-1),(2))   #(2,)
+    cls_max = tf.reduce_max(mask_cls,axis=-1)   #(class,h,w)
+    cls_max_r = tf.reshape(cls_max,(cfg.dataset.NUM_CLASSES+1,-1))  #(class,h*w)
+    # cls_max_t = tf.transpose(cls_max,(0,2,1,3))   #(2,49,n_points)--(classes,bins,pixel_max)
+    # cls_max_r = tf.reshape(cls_max_t,(2,-1))   #(2,49*n_points)--(classes,bins*pixel_max)
+    cls_ave = tf.reduce_mean(cls_max_r,axis=-1)   #(2,)
 
     cls = tf.nn.softmax(cls_ave)
     cls_result = tf.arg_max(cls,dimension=0)    #(n,)
     cls_score = tf.argmax(cls,axis=-1)
 
-    mask = tf.transpose(mask,(1,0,2,3)) #(2,49,n_points,2)--(classes,bins,pixel,in/outside score)
-    # indices = tf.stack((tf.range(roi_num),tf.reshape(cls_result,(roi_num,))),axis=-1)
-    # mask_result = tf.gather_nd(mask,indices)    #(n,49,n_points,2)
-    mask_result = mask[cls_result]  #(49,n_points,2)
+    mask_result = mask[cls_result]  #(h,w,inside/outside)(h,w,2)
 
-    return cls, cls_result, cls_score, mask_result   #(2,1,(49,n_points,2))
+    return cls, cls_result, cls_score, mask_result   #(2,1,(h,w,2))
 
 def model_part2_2(roi,bbox_shift):
     '''
@@ -147,14 +148,15 @@ def model_part2_2(roi,bbox_shift):
     # rois = roi.get_rois()
     ps_roi_layer2 = PS_roi_offset(bbox_shift, roi,
                                   pool_size=cfg.network.PSROI_BINS, pool=True,
-                                  feat_stride=8).call(bbox_shift)  # (n,49,4)
+                                  feat_stride=8).call(bbox_shift)  #(4,k,k)
     # roi_num = tf.shape(rois)[0]
-    bbox = tf.reshape(ps_roi_layer2, (cfg.network.PSROI_BINS*cfg.network.PSROI_BINS, 4))  # (49,4)
-    bbox = tf.reduce_mean(bbox,axis=0)  #(4)
+    bbox = tf.reshape(ps_roi_layer2, (4,cfg.network.PSROI_BINS*cfg.network.PSROI_BINS))  # (4,k*k)
+    bbox = tf.reduce_mean(bbox,axis=1)  #(4)
     return bbox
 
+result = {}
 
-def model_part2(imdims,roi,ps_score_map,bbox_shift):
+def model_part2(imdims,rois,ps_score_map,bbox_shift):
     '''
     compute rois' cls_score and mask_score,apply nms on rois by their scores
     :param imdims:
@@ -163,29 +165,29 @@ def model_part2(imdims,roi,ps_score_map,bbox_shift):
     :param bbox_shift:
     :return:
     '''
-    rois = roi.get_rois()
-    roi_num = tf.shape(rois)[0]
-
-    result = {}
-    i = 0
-
     # compute orignal roi and roi added with offset
 
-    def cond1(i, rois):
-        return tf.cast((i < roi_num), tf.bool)
+    # def cond1(i, rois):
+    #     return i < roi_num
+    #
+    # def body1(i, rois):
+    #     roi = rois[i]
+    #     offsets = model_part2_2(rois[i], bbox_shift)  # (4)
+    #     offsets = tf.reshape(offsets, (-1, 4))
+    #
+    #     # compute the boxes with offsets
+    #     proposals = tf.py_func(bbox_transform_inv, [rois[i][-4:], offsets], tf.float32)  # (1,4)
+    #     proposals = tf.py_func(clip_boxes, [proposals, imdims], tf.float32)  # (1,4)
+    #     rois = tf.concat((rois, proposals), axis=0)
+    #     return i + 1, rois
+    #
+    # i, rois = tf.while_loop(cond1, body1, (0, rois))
 
-    def body1(i, rois):
-        roi = rois[i]
-        offsets = model_part2_2(rois[i], bbox_shift)  # (4)
-        offsets = tf.reshape(offsets, (-1, 4))
+    offsets = tf.map_fn(lambda x:model_part2_2(x,bbox_shift),rois)  #(n,4)
+    proposals = tf.py_func(bbox_transform_inv,[rois[:,-4:],offsets],tf.float32) #(n,4)
+    proposals = tf.py_func(clip_boxes,[proposals,imdims],tf.float32)    #(n,4)
+    rois = tf.concat((rois,proposals),axis=0)   #(2n,4)
 
-        # compute the boxes with offsets
-        proposals = tf.py_func(bbox_transform_inv, [rois[i][-4:], offsets], tf.float32)  # (1,4)
-        proposals = tf.py_func(clip_boxes, [proposals, imdims], tf.float32)  # (1,4)
-        rois = tf.concat((rois, proposals), axis=0)
-        return i + 1, rois
-
-    i, rois = tf.while_loop(cond1, body1, (0, rois))
     '''
     for i in range(roi_num):
         i += 1
@@ -195,20 +197,19 @@ def model_part2(imdims,roi,ps_score_map,bbox_shift):
         proposals = tf.py_func(clip_boxes, [proposals, imdims], tf.float32)  # (1,4)
         rois = tf.concat((rois, proposals), axis=0)
     '''
-    roi_num = tf.shape(rois)[0]
-    i = 0
+    roi_num = tf.convert_to_tensor(cfg.TRAIN.RPN_POST_NMS_TOP_N*2)
 
     # deal per roi
-
-    def cond2(i):
-        return tf.cast((i<roi_num),tf.bool)
-    def body2(i):
+    def cond2(i,rois):
+        return i<roi_num
+    def body2(i,rois):
         bbox = model_part2_2(rois[i],bbox_shift)
         cls, cls_result,cls_score, mask_result = model_part2_1(rois[i], ps_score_map)
-        global result
-        result[str(i)] = {'cls':cls, 'cls_result':cls_result, 'cls_score':cls_score, 'mask':mask_result, 'roi':rois[i], 'shift':bbox}
-        return i+1
-    i = tf.while_loop(cond2, body2, (0))
+        j = tf.py_func(_add_to_dict,[i,cls,cls_result,cls_score,mask_result,rois[i],bbox],tf.int32)
+        # global result
+        # result[str(i)] = {'cls':cls, 'cls_result':cls_result, 'cls_score':cls_score, 'mask':mask_result, 'roi':rois[i], 'shift':bbox}
+        return tf.add(i, 1),rois
+    i1,rois = tf.while_loop(cond2, body2, (0,rois))
     '''
     for i in range(roi_num):
         bbox = model_part2_2(rois[i], bbox_shift)
@@ -217,9 +218,12 @@ def model_part2(imdims,roi,ps_score_map,bbox_shift):
                           'roi': rois[i], 'shift': bbox}
         pass
     '''
-
     return result
 
+def _add_to_dict(i,cls, cls_result,cls_score, mask_result,roi,shift):
+    global result
+    result[str(i)] = {'cls':cls, 'cls_result':cls_result, 'cls_score':cls_score, 'mask':mask_result, 'roi':roi, 'shift':shift}
+    return i
 
 def model_part3(results):
     '''

@@ -20,23 +20,20 @@ class PS_roi_offset():
     def call(self, inputs):
         inputs_shape = inputs.get_shape()
         roi_shape = self.rois.get_shape()
-        ''''''
         roi_width = self.rois[3] - self.rois[1]    #(1)
         roi_height = self.rois[4] - self.rois[2]    #(1)
         offset_map = tf.keras.layers.Conv2D(self.filters*2,(3,3),padding='same',
                                             use_bias=False)(inputs)
-        # offset_map = slim.conv2d(inputs,8,(3,3))
-        roi = tf.reshape(self.rois, (1,5))
-        offset = ps_roi(offset_map,self.rois)  # normalized offset (n*k*k,(c+1)*2)
-        offset = tf.reshape(offset,(-1,2)) # normalized offset (n*k*k*(c+1),2)
-        sa = offset.get_shape()[0]
-        sa0 = tf.cast(sa,'int32')
-        sa1 = tf.cast(roi_shape[0],'int32')
-        repeats = tf.cast(offset.get_shape()[0],'int32')/tf.cast(roi_shape[0],'int32')
+        roi = tf_flatten(self.rois)
+        #roi = tf.reshape(self.rois, (-1))
+        offset = ps_roi(offset_map,roi,k=cfg.network.PSROI_BINS)  # normalized offset (n*k*k,(c+1)*2)(2*(c+1)*2,k,k)
+        offset = tf.transpose(offset,(1,2,0))   #(k,k,c*2)
+        offset = tf.reshape(offset,(-1,2)) # normalized offset (k*k*(c+1),2)
+        # repeats = tf.cast(offset.get_shape()[0],'int32')/tf.cast(roi_shape[0],'int32')
+        # repeats = tf.cast(offset.get_shape()[0],'int32')
+
 
         # compute the roi's width and height
-        roi_width = tf.reshape(tf_repeat(roi_width,tf.cast(repeats,'int32')), [-1])  #(n*k*k*(c+1),1)
-        roi_height = tf.reshape(tf_repeat(roi_height,tf.cast(repeats,'int32')), [-1])  #(n*k*k*(c+1),1)
         roi_width = tf.cast(roi_width,'float32')
         roi_height = tf.cast(roi_height,'float32')
 
@@ -44,9 +41,9 @@ class PS_roi_offset():
         # element-wise product with the roi's width and height
         temp1 = offset[...,0] * roi_width * tf.convert_to_tensor(self.lamda)
         temp2 = offset[...,1] * roi_height * tf.convert_to_tensor(self.lamda)
-        offset = tf.stack((temp1,temp2),axis=-1)  #(n*k*k*(c+1),2)
+        offset = tf.stack((temp1,temp2),axis=-1)  #(k*k*(c+1),2)
         pooled_response = ps_roi(features=self.features,
-                                 boxes=self.rois,pool=self.pool,offsets=offset,
-                                 k=self.pool_size,feat_stride=self.feat_stride)   #(n*k*k,depth,n_points)
+                                 boxes=roi,pool=self.pool,offsets=offset,
+                                 k=self.pool_size,feat_stride=self.feat_stride)   #(depth,h,w)
         return pooled_response
 
